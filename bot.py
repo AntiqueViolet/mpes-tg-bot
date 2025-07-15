@@ -43,5 +43,30 @@ def main():
     bot = Bot(token=os.getenv("BOT_TOKEN"))
     dp = Dispatcher()
 
+    try:
+        with conn.cursor() as cur:
+            cur.execute(f"""
+                SELECT 
+                    SUM(afoc.balance)
+                FROM algon_finance_online_cashbox afoc 
+                WHERE afoc.type <> "disabled"
+            """)
+            
+            db_data = cur.fetchone()
+            logger.info(f"Получено {len(db_data)} записей из БД")
+            
+            if not db_data:
+                logger.error("Данные не получены из БД")
+                return
+
+            bot.send_message()
+
+    except Exception as e:
+        logger.exception(f"Критическая ошибка: {str(e)}")
+        raise
+    finally:
+        conn.close()
+
+
 if __name__ == "__main__":
     main()
