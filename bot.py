@@ -20,7 +20,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-def main():
+async def main():
     logger.info("Начался процесс обработки сообщения!")
     db_params = {
             "user": os.getenv("DB_USER"),
@@ -58,8 +58,18 @@ def main():
             if not db_data:
                 logger.error("Данные не получены из БД")
                 return
+            now_naked = datetime.now()
+            now =    now_naked.strftime("%Y-%m-%d")
+            kassa = int(db_data['SUM(afoc.balance)'])
+            text_s = f'''
+            Баланс Экосмотр {now}\n
+            1. Р/с - \n
+            2. Эквайринг - \n
+            3. Кассы Драйв - {kassa}\n
+            Итого: {kassa}
+            '''
 
-            bot.send_message()
+            await bot.send_message(chat_id=366532391, text=text_s)
 
     except Exception as e:
         logger.exception(f"Критическая ошибка: {str(e)}")
@@ -69,4 +79,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())
