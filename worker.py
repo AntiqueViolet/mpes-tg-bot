@@ -13,6 +13,7 @@ import html
 from pymysql import Error as PyMysqlError
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, CallbackQuery
 from aiogram import Dispatcher
+
 load_dotenv()
 
 api_id = int(os.getenv("TG_API_ID"))
@@ -26,7 +27,7 @@ target_chat_id = int(os.getenv("OWNER_CHAT_ID"))
 client = TelegramClient('anon', api_id, api_hash)
 
 parsed_data = []
-
+last_summary_text = ""
 
 async def obrabotchik():
     db_params = {
@@ -47,7 +48,7 @@ async def obrabotchik():
 
     try:
         with conn.cursor() as cur:
-            cur.execute(f"""
+            cur.execute("""
                 SELECT 
                     SUM(afoc.balance)
                 FROM algon_finance_online_cashbox afoc 
@@ -55,11 +56,8 @@ async def obrabotchik():
             """)
 
             db_data = cur.fetchone()
-
             if not db_data:
                 return
-            now_naked = datetime.now()
-            now = now_naked.strftime("%Y-%m-%d")
             kassa = float(db_data['SUM(afoc.balance)'])
             return float(kassa)
     except Exception as e:
@@ -72,11 +70,11 @@ def parse_financial_message(text):
     parsed_data = []
 
     total = 0.0
-    pattern = re.compile(r"^\^(.+?)\$(\-?[\d\s.,]+)\$$", re.MULTILINE)
+    pattern = re.compile(r"^\^(.+?)\$(\-?[\d\s.,]+)\$", re.MULTILINE)
 
     for match in pattern.finditer(text):
         name = match.group(1).strip()
-        value = float(match.group(2).replace(" ", "").replace(",", "."))
+        value = float(match.group(2).replace("\xa0", "").replace(" ", "").replace(",", "."))
         parsed_data.append((name, value))
         total += value
 
@@ -85,6 +83,8 @@ def parse_financial_message(text):
 
 @client.on(events.NewMessage)
 async def handler(event):
+    global last_summary_text
+
     text = event.text
     if not text or "^" not in text or "$" not in text:
         return
@@ -101,36 +101,36 @@ async def handler(event):
         itog_sum = total + kassa
         itog_str = f"{itog_sum:,.2f}".replace(",", " ").replace(".", ",")
 
-        text_s = (
-            f"<b>📅 Баланс Экосмотр на {now}</b>\n\n"
-            f"💳 <b>1. Р/с:</b> {total_str} ₽\n"
-            f"🏦 <b>2. Кассы Драйв:</b> {kassa_str} ₽\n\n"
-            f"🧾 <b>Итого:</b> {itog_str} ₽"
+        last_summary_text = (
+            f"<b>\U0001F4C5 Баланс Экосмотр на {now}</b>\n\n"
+            f"\U0001F4B3 <b>1. Р/с:</b> {total_str} ₽\n"
+            f"\U0001F3E6 <b>2. Кассы Драйв:</b> {kassa_str} ₽\n\n"
+            f"\U0001F9FE <b>Итого:</b> {itog_str} ₽"
         )
 
         keyboard = InlineKeyboardMarkup(
             inline_keyboard=[
-                [InlineKeyboardButton(text="📋 Подробный список", callback_data="show_details")]
+                [InlineKeyboardButton(text="\U0001F4CB Подробно кассы", callback_data="show_details")],
+                [InlineKeyboardButton(text="\U0001F4E8 Подробно счета", callback_data="show_raw")]
             ]
         )
 
-        await bot.send_message(chat_id=target_chat_id, text=text_s, reply_markup=keyboard)
+        await bot.send_message(chat_id=target_chat_id, text=last_summary_text, reply_markup=keyboard)
 
     except Exception as e:
         await bot.send_message(chat_id=target_chat_id, text=f"❌ Ошибка при обработке: {e}")
 
 @dp.callback_query(lambda c: c.data == "show_details")
 async def handle_callback(callback: CallbackQuery):
-    db_params = {
-        "user": os.getenv("DB_USER"),
-        "password": os.getenv("DB_PASS"),
-        "host": os.getenv("DB_HOST"),
-        "port": int(os.getenv("DB_PORT", 3366)),
-        "database": os.getenv("DB_NAME"),
-        "charset": 'utf8mb4',
-    }
-
     try:
+        db_params = {
+            "user": os.getenv("DB_USER"),
+            "password": os.getenv("DB_PASS"),
+            "host": os.getenv("DB_HOST"),
+            "port": int(os.getenv("DB_PORT", 3366)),
+            "database": os.getenv("DB_NAME"),
+            "charset": 'utf8mb4',
+        }
         conn = pymysql.connect(**db_params, cursorclass=pymysql.cursors.DictCursor)
         with conn.cursor() as cur:
             cur.execute("""
@@ -138,10 +138,10 @@ async def handle_callback(callback: CallbackQuery):
                 o.name,
                 SUM(afoc.balance) as Kassa
             FROM algon_finance_online_cashbox afoc 
-            inner join oto o ON o.id = afoc.oto_id 
-            WHERE afoc.`type` <> "disabled" and afoc.balance <> 0 and afoc.oto_id is not null
-            group by o.name
-            ORDER by Kassa desc
+            INNER JOIN oto o ON o.id = afoc.oto_id 
+            WHERE afoc.`type` <> "disabled" AND afoc.balance <> 0 AND afoc.oto_id IS NOT NULL
+            GROUP BY o.name
+            ORDER BY Kassa DESC
             """)
             rows_1 = cur.fetchall()
 
@@ -150,36 +150,83 @@ async def handle_callback(callback: CallbackQuery):
                 afoc.name,
                 afoc.balance as Kassa
             FROM algon_finance_online_cashbox afoc  
-            WHERE (afoc.`type` = "reg" or afoc.`type` = "manage_company") and afoc.balance <> 0 
-            ORDER by Kassa desc
+            WHERE (afoc.`type` = "reg" OR afoc.`type` = "manage_company") AND afoc.balance <> 0 
+            ORDER BY Kassa DESC
             """)
             rows_2 = cur.fetchall()
 
         lines = []
-        for row in rows_1:
+        for row in rows_1 + rows_2:
             name = row["name"].strip()
             balance = float(row["Kassa"])
             balance_str = f"{balance:,.2f}".replace(",", " ").replace(".", ",")
-            line = f"▪️ {name:<35}{balance_str:>15} ₽"
-            lines.append(f"{line}")
-
-        for row in rows_2:
-            name = row["name"].strip()
-            balance = float(row["Kassa"])
-            balance_str = f"{balance:,.2f}".replace(",", " ").replace(".", ",")
-            line = f"▫️ {name:<35}{balance_str:>15} ₽"
-            lines.append(f"{line}")
+            bullet = "▪️" if row in rows_1 else "▫️"
+            line = f"{bullet} {name:<35}{balance_str:>15} ₽"
+            lines.append(line)
 
         message = "\n".join(lines)
-        chunks = [message[i:i+4000] for i in range(0, len(message), 4000)]
+        keyboard = InlineKeyboardMarkup(
+            inline_keyboard=[[InlineKeyboardButton(text="🔙 Назад", callback_data="back_to_main")]]
+        )
 
-        for chunk in chunks:
-            await bot.send_message(chat_id=callback.from_user.id, text=chunk, parse_mode="HTML")
-
+        await bot.edit_message_text(
+            chat_id=callback.message.chat.id,
+            message_id=callback.message.message_id,
+            text=message,
+            reply_markup=keyboard,
+            parse_mode="HTML"
+        )
         await callback.answer()
     except Exception as e:
-        print(e)
-        await callback.answer(f"Ошибка при получении данных {e}")
+        await callback.answer(f"Ошибка: {e}", show_alert=True)
+
+@dp.callback_query(lambda c: c.data == "show_raw")
+async def handle_show_raw(callback: CallbackQuery):
+    global parsed_data
+    try:
+        if not parsed_data:
+            await callback.answer("Нет данных", show_alert=True)
+            return
+
+        lines = []
+        for name, value in parsed_data:
+            value_str = f"{value:,.2f}".replace(",", " ").replace(".", ",")
+            line = f"▫️ {html.escape(name):<35}{value_str:>15} ₽"
+            lines.append(line)
+
+        message = "\n".join(lines)
+        keyboard = InlineKeyboardMarkup(
+            inline_keyboard=[[InlineKeyboardButton(text="🔙 Назад", callback_data="back_to_main")]]
+        )
+
+        await bot.edit_message_text(
+            chat_id=callback.message.chat.id,
+            message_id=callback.message.message_id,
+            text=message,
+            reply_markup=keyboard,
+            parse_mode="HTML"
+        )
+        await callback.answer()
+    except Exception as e:
+        await callback.answer(f"Ошибка: {e}", show_alert=True)
+
+@dp.callback_query(lambda c: c.data == "back_to_main")
+async def handle_back(callback: CallbackQuery):
+    global last_summary_text
+    keyboard = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="\U0001F4CB Подробно кассы", callback_data="show_details")],
+            [InlineKeyboardButton(text="\U0001F4E8 Подробно счета", callback_data="show_raw")]
+        ]
+    )
+    await bot.edit_message_text(
+        chat_id=callback.message.chat.id,
+        message_id=callback.message.message_id,
+        text=last_summary_text,
+        reply_markup=keyboard,
+        parse_mode="HTML"
+    )
+    await callback.answer()
 
 async def main():
     await client.start()
