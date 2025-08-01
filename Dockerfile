@@ -8,12 +8,13 @@ RUN apt-get update && apt-get install -y \
 
 WORKDIR /app
 
+COPY anon.session .
 COPY worker.py .
 COPY README.md .
-COPY requirements.txt .
+COPY req.txt .
 COPY .env .env
 
 RUN pip install --no-cache-dir --upgrade pip \
- && pip install --no-cache-dir -r requirements.txt
+ && pip install --no-cache-dir -r req.txt
 
 CMD ["python", "worker.py"]
