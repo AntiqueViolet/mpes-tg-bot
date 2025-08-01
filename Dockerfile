@@ -12,7 +12,6 @@ COPY anon.session .
 COPY worker.py .
 COPY README.md .
 COPY req.txt .
-COPY .env .env
 
 RUN pip install --no-cache-dir --upgrade pip \
  && pip install --no-cache-dir -r req.txt
