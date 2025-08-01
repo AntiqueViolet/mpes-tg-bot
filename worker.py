@@ -28,7 +28,7 @@ client = TelegramClient('anon', api_id, api_hash)
 
 parsed_data = []
 last_summary_text = ""
-
+#1
 async def obrabotchik():
     db_params = {
         "user": os.getenv("DB_USER"),
