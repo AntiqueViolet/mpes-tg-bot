@@ -8,7 +8,6 @@ RUN apt-get update && apt-get install -y \
 
 WORKDIR /app
 
-COPY anon.session .
 COPY worker.py .
 COPY README.md .
 COPY req.txt .
