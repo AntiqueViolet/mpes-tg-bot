@@ -161,8 +161,9 @@ async def handle_callback(callback: CallbackQuery):
             balance = float(row["Kassa"])
             balance_str = f"{balance:,.2f}".replace(",", " ").replace(".", ",")
             bullet = "▪️" if row in rows_1 else "▫️"
-            line = f"{bullet} {name:<35}{balance_str:>15} ₽"
-            lines.append(line)
+            lines.append(f"{bullet} {name}")
+            lines.append(f"{balance_str} ₽")
+            lines.append("")
 
         message = "\n".join(lines)
         keyboard = InlineKeyboardMarkup(
@@ -191,8 +192,9 @@ async def handle_show_raw(callback: CallbackQuery):
         lines = []
         for name, value in parsed_data:
             value_str = f"{value:,.2f}".replace(",", " ").replace(".", ",")
-            line = f"▫️ {html.escape(name):<35}{value_str:>15} ₽"
-            lines.append(line)
+            lines.append(f"▫️ {html.escape(name)}")
+            lines.append(f"{value_str} ₽")
+            lines.append("")
 
         message = "\n".join(lines)
         keyboard = InlineKeyboardMarkup(
