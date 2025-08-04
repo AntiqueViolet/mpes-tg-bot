@@ -142,7 +142,6 @@ async def handler(event):
         logging.error(f"Ошибка в handler: {e}")
         logging.error(traceback.format_exc())
         await bot.send_message(chat_id=target_chat_id, text=f"❌ Ошибка при обработке: {e}")
-        await bot.send_message(chat_id=target_chat_id_D, text=f"❌ Ошибка при обработке: {e}")
 
 
 @dp.callback_query(lambda c: c.data == "show_details")
