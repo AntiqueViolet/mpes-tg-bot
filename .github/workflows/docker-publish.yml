@@ -18,6 +18,7 @@ jobs:
             echo "TG_API_HASH=${{ secrets.TG_API_HASH }}"
             echo "BOT_TOKEN=${{ secrets.BOT_TOKEN }}"
             echo "OWNER_CHAT_ID=${{ secrets.OWNER_CHAT_ID }}"
+            echo "OWNER_CHAT_ID_D=${{ secrets.OWNER_CHAT_ID_D }}"
             echo "DB_USER=${{ secrets.DB_USER }}"
             echo "DB_PASS=${{ secrets.DB_PASS }}"
             echo "DB_HOST=${{ secrets.DB_HOST }}"
