@@ -89,7 +89,7 @@ def parse_financial_message(text):
     logging.debug(f"Текст для парсинга: {text[:500]}")
     parsed_data = []
     total = 0.0
-    pattern = re.compile(r"^\\^(.+?)\\$(\\-?[\\d\\s.,]+)\\$", re.MULTILINE)
+    pattern = re.compile(r"^\^(.+?)\$(\-?[\d\s.,]+)\$", re.MULTILINE)
 
     for match in pattern.finditer(text):
         name = match.group(1).strip()
