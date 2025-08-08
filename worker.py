@@ -43,11 +43,6 @@ if not session_str:
     raise RuntimeError("Нет TG_SESSION. Сгенерируйте StringSession и положите в .env")
 client = TelegramClient(StringSession(session_str), api_id, api_hash)
 
-# а старт теперь безопасный
-client.connect()
-if not client.is_user_authorized():
-    raise RuntimeError("Сессия не авторизована (исчерпана/неверная). Нужна новая TG_SESSION.")
-
 # Кэш последних данных для кнопки "Подробно счета"
 parsed_data = []
 # Текст последнего сводного сообщения для "Назад"
