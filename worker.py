@@ -19,6 +19,7 @@ from dotenv import load_dotenv
 import pymysql
 from pymysql import Error as PyMysqlError
 
+from telethon.sessions import StringSession
 load_dotenv()
 
 logging.basicConfig(
@@ -37,12 +38,21 @@ target_chat_id = int(os.getenv("OWNER_CHAT_ID"))
 _owner_d = os.getenv("OWNER_CHAT_ID_D")
 target_chat_id_D = int(_owner_d) if (_owner_d and _owner_d.isdigit()) else target_chat_id
 
-client = TelegramClient('anon', api_id, api_hash)
+session_str = os.getenv("TG_SESSION")
+if not session_str:
+    raise RuntimeError("Нет TG_SESSION. Сгенерируйте StringSession и положите в .env")
+client = TelegramClient(StringSession(session_str), api_id, api_hash)
+
+# а старт теперь безопасный
+client.connect()
+if not client.is_user_authorized():
+    raise RuntimeError("Сессия не авторизована (исчерпана/неверная). Нужна новая TG_SESSION.")
 
 # Кэш последних данных для кнопки "Подробно счета"
 parsed_data = []
 # Текст последнего сводного сообщения для "Назад"
 last_summary_text = ""
+
 
 
 # ---------- Работа с БД ----------
