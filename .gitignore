@@ -20,5 +20,6 @@ __pycache__/
 
 *.session
 *.session-journal
-
+*.b64
 Dockerfile
+worker_backup.py
