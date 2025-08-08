@@ -45,6 +45,7 @@ client = TelegramClient(StringSession(session_str), api_id, api_hash)
 
 # Кэш последних данных для кнопки "Подробно счета"
 parsed_data = []
+
 # Текст последнего сводного сообщения для "Назад"
 last_summary_text = ""
 
