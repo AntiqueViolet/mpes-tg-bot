@@ -50,14 +50,12 @@ async def obrabotchik():
     }
     if None in db_params.values():
         logging.error("Параметры подключения к БД неполные")
-        sys.exit(1)
 
     try:
         conn = pymysql.connect(**db_params, cursorclass=pymysql.cursors.DictCursor)
         logging.debug("Успешное подключение к БД")
     except PyMysqlError as e:
         logging.error(f"Ошибка подключения к БД: {e}")
-        sys.exit(1)
 
     try:
         with conn.cursor() as cur:
