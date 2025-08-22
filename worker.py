@@ -36,7 +36,9 @@ dp = Dispatcher()
 
 target_chat_id = int(os.getenv("OWNER_CHAT_ID"))
 _owner_d = os.getenv("OWNER_CHAT_ID_D")
+_owner_n = os.getenv("OWNER_CHAT_ID_N")
 target_chat_id_D = int(_owner_d) if (_owner_d and _owner_d.isdigit()) else target_chat_id
+target_chat_id_N = int(_owner_n) if (_owner_n and _owner_n.isdigit()) else target_chat_id
 
 session_str = os.getenv("TG_SESSION")
 if not session_str:
@@ -161,6 +163,8 @@ async def handler(event):
         if target_chat_id_D != target_chat_id:
             await bot.send_message(chat_id=target_chat_id_D, text=last_summary_text, reply_markup=keyboard)
 
+        if target_chat_id_N != target_chat_id:
+            await bot.send_message(chat_id=target_chat_id_N, text=last_summary_text, reply_markup=keyboard)
     except Exception as e:
         logging.error(f"Ошибка в handler: {e}")
         logging.error(traceback.format_exc())
