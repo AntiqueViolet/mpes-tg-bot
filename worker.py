@@ -336,22 +336,20 @@ async def handle_back(callback: CallbackQuery):
 def _format_taxes_table(rows):
     """
     Возвращает список текстовых 'страниц' с таблицей в <pre>, чтобы не превышать ~3500-3800 символов.
-    Колонки: Регион | Кол-во пошлин | Цена за пошлину | Тип пошлины
+    Колонки: Регион | Кол-во пошлин
     """
     if not rows:
         return ["Данных не найдено."]
 
-    headers = ["Регион", "Кол-во пошлин", "Цена за пошлину", "Тип пошлины"]
+    headers = ["Регион", "Кол-во пошлин"]
 
     str_rows = []
     col_widths = [len(h) for h in headers]
     for r in rows:
         region = str(r.get("Регион", "") or "")
         cnt    = str(r.get("Кол-во пошлин", "") or "")
-        price  = str(r.get("Цена за пошлину", "") or "")
-        ttype  = str(r.get("Тип пошлины", "") or "")
 
-        row = [region, cnt, price, ttype]
+        row = [region, cnt]
         str_rows.append(row)
         for i, cell in enumerate(row):
             col_widths[i] = max(col_widths[i], len(cell))
@@ -416,9 +414,7 @@ async def handle_check_taxes(callback: CallbackQuery):
             cur.execute("""
                 SELECT
                     wurl.name as 'Регион',
-                    COUNT(t.upno) as 'Кол-во пошлин',
-                    t.price as 'Цена за пошлину',
-                    t.`type` as 'Тип пошлины'
+                    COUNT(t.upno) as 'Кол-во пошлин'
                 FROM tax t
                 INNER JOIN webto_user_region_list wurl on wurl.id = t.region_id 
                 WHERE t.active = 1
