@@ -14,6 +14,7 @@ from aiogram.enums import ParseMode
 from aiogram.client.default import DefaultBotProperties
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, CallbackQuery
 from aiogram.exceptions import TelegramBadRequest
+from aiogram.filters import Command
 
 from dotenv import load_dotenv
 import pymysql
@@ -30,6 +31,10 @@ logging.basicConfig(
 api_id = int(os.getenv("TG_API_ID"))
 api_hash = os.getenv("TG_API_HASH")
 bot_token = os.getenv("BOT_TOKEN")
+
+ALLOWED_START_IDS = set(
+    int(x.strip()) for x in os.getenv("ALLOWED_START_IDS").split(",") if x.strip()
+)
 
 bot = Bot(token=bot_token, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
 dp = Dispatcher()
@@ -327,6 +332,142 @@ async def handle_back(callback: CallbackQuery):
         logging.error(traceback.format_exc())
         with contextlib.suppress(Exception):
             await callback.answer(f"Ошибка: {e}", show_alert=True)
+
+def _format_taxes_table(rows):
+    """
+    Возвращает список текстовых 'страниц' с таблицей в <pre>, чтобы не превышать ~3500-3800 символов.
+    Колонки: Регион | Кол-во пошлин | Цена за пошлину | Тип пошлины
+    """
+    if not rows:
+        return ["Данных не найдено."]
+
+    headers = ["Регион", "Кол-во пошлин", "Цена за пошлину", "Тип пошлины"]
+
+    str_rows = []
+    col_widths = [len(h) for h in headers]
+    for r in rows:
+        region = str(r.get("Регион", "") or "")
+        cnt    = str(r.get("Кол-во пошлин", "") or "")
+        price  = str(r.get("Цена за пошлину", "") or "")
+        ttype  = str(r.get("Тип пошлины", "") or "")
+
+        row = [region, cnt, price, ttype]
+        str_rows.append(row)
+        for i, cell in enumerate(row):
+            col_widths[i] = max(col_widths[i], len(cell))
+
+    def fmt_row(cells):
+        return "  ".join(cell.ljust(col_widths[i]) for i, cell in enumerate(cells))
+
+    header_line = fmt_row(headers)
+    sep_line = "-" * len(header_line)
+
+    pages = []
+    current = ["<b>Актуальные гос.пошлины по регионам</b>", "<pre>", header_line, sep_line]
+    current_len = sum(len(x) for x in current) + 50  # запас на теги
+
+    for row in str_rows:
+        line = fmt_row(row)
+        if current_len + len(line) + 7 > 3500:
+            current.append("</pre>")
+            pages.append("\n".join(current))
+            current = ["<b>Актуальные гос.пошлины по регионам (продолжение)</b>", "<pre>", header_line, sep_line]
+            current_len = sum(len(x) for x in current) + 50
+
+        current.append(line)
+        current_len += len(line) + 1
+
+    current.append("</pre>")
+    pages.append("\n".join(current))
+    return pages
+
+@dp.message(Command("start"))
+async def cmd_start(message):
+    try:
+        user_id = int(message.from_user.id)
+    except Exception:
+        user_id = None
+
+    if user_id not in ALLOWED_START_IDS:
+        return
+
+    text = (
+        'Привет! По кнопке "<b>Проверить пошлины</b>" можно посмотреть актуальное '
+        'количество гос пошлин по регионам!'
+    )
+
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="Проверить пошлины", callback_data="check_taxes")]
+    ])
+
+    await bot.send_message(chat_id=message.chat.id, text=text, reply_markup=keyboard)
+
+@dp.callback_query(lambda c: c.data == "check_taxes")
+async def handle_check_taxes(callback: CallbackQuery):
+    conn = None
+    try:
+        params = _db_params()
+        if any(v in (None, "") for v in params.values()):
+            await callback.answer("База недоступна. Проверьте настройки подключения.", show_alert=True)
+            return
+
+        conn = pymysql.connect(**params, cursorclass=pymysql.cursors.DictCursor)
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT
+                    wurl.name as 'Регион',
+                    COUNT(t.upno) as 'Кол-во пошлин',
+                    t.price as 'Цена за пошлину',
+                    t.`type` as 'Тип пошлины'
+                FROM tax t
+                INNER JOIN webto_user_region_list wurl on wurl.id = t.region_id 
+                WHERE t.active = 1
+                GROUP BY t.region_id, t.`type`, t.price
+                ORDER BY COUNT(t.upno) DESC
+            """)
+            rows = cur.fetchall()
+
+        pages = _format_taxes_table(rows)
+
+        if len(pages) == 1:
+            await bot.edit_message_text(
+                chat_id=callback.message.chat.id,
+                message_id=callback.message.message_id,
+                text=pages[0],
+                reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                    [InlineKeyboardButton(text="Обновить", callback_data="check_taxes")]
+                ]),
+                parse_mode="HTML"
+            )
+        else:
+            await bot.edit_message_text(
+                chat_id=callback.message.chat.id,
+                message_id=callback.message.message_id,
+                text=pages[0],
+                reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                    [InlineKeyboardButton(text="Обновить", callback_data="check_taxes")]
+                ]),
+                parse_mode="HTML"
+            )
+            for p in pages[1:]:
+                await bot.send_message(chat_id=callback.message.chat.id, text=p, parse_mode="HTML")
+
+        await callback.answer()
+    except TelegramBadRequest as e:
+        logging.warning(f"TelegramBadRequest: {e}")
+        try:
+            await callback.answer("Сообщение устарело. Нажмите ещё раз «Проверить пошлины».", show_alert=True)
+        except Exception:
+            pass
+    except Exception as e:
+        logging.error(f"Ошибка в handle_check_taxes: {e}")
+        logging.error(traceback.format_exc())
+        with contextlib.suppress(Exception):
+            await callback.answer(f"Ошибка: {e}", show_alert=True)
+    finally:
+        with contextlib.suppress(Exception):
+            if conn:
+                conn.close()
 
 
 @dp.error()

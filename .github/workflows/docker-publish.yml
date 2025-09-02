@@ -25,6 +25,7 @@ jobs:
             echo "DB_PORT=${{ secrets.DB_PORT }}"
             echo "DB_NAME=${{ secrets.DB_NAME }}"
             echo "TG_SESSION=${{ secrets.TG_SESSION }}"
+            echo "ALLOWED_START_IDS=${{ secrets.ALLOWED_START_IDS }}"
           } > .env
 
       - name: Login to Docker Hub
