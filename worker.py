@@ -413,12 +413,13 @@ async def handle_check_taxes(callback: CallbackQuery):
         with conn.cursor() as cur:
             cur.execute("""
                 SELECT
-                    wurl.name as 'Регион',
+                    IF(t.oto_id is NULL, CONCAT(wurl.name, ' (0) '), CONCAT(wurl.name, ' (', t.oto_id,') ', ' ', o.address)) as 'Регион',
                     COUNT(t.upno) as 'Кол-во пошлин'
                 FROM tax t
                 INNER JOIN webto_user_region_list wurl on wurl.id = t.region_id 
-                WHERE t.active = 1
-                GROUP BY t.region_id, t.`type`, t.price
+                LEFT JOIN oto o on t.oto_id = o.id
+                where t.active = 1
+                GROUP BY t.region_id, t.oto_id
                 ORDER BY COUNT(t.upno) DESC
             """)
             rows = cur.fetchall()
