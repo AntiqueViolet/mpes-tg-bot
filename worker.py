@@ -336,20 +336,21 @@ async def handle_back(callback: CallbackQuery):
 def _format_taxes_table(rows):
     """
     Возвращает список текстовых 'страниц' с таблицей в <pre>, чтобы не превышать ~3500-3800 символов.
-    Колонки: Регион | Кол-во пошлин
+    Колонки: Код региона | Получатель | Остаток
     """
     if not rows:
         return ["Данных не найдено."]
 
-    headers = ["Регион", "Кол-во пошлин"]
+    headers = ["Код региона", "Получатель", "Остаток"]
 
     str_rows = []
     col_widths = [len(h) for h in headers]
     for r in rows:
-        region = str(r.get("Регион", "") or "")
-        cnt    = str(r.get("Кол-во пошлин", "") or "")
+        region_code = str(r.get("Код региона", "") or "")
+        recipient = str(r.get("Получатель", "") or "")
+        count = str(r.get("Остаток", "") or "0")
 
-        row = [region, cnt]
+        row = [region_code, recipient, count]
         str_rows.append(row)
         for i, cell in enumerate(row):
             col_widths[i] = max(col_widths[i], len(cell))
@@ -395,14 +396,21 @@ async def cmd_start(message):
     )
 
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="Проверить пошлины", callback_data="check_taxes")]
+        [InlineKeyboardButton(text="Проверить пошлины", callback_data="check_taxes:1")]  # ← Добавлено :1
     ])
 
     await bot.send_message(chat_id=message.chat.id, text=text, reply_markup=keyboard)
 
-@dp.callback_query(lambda c: c.data == "check_taxes")
+
+@dp.callback_query(lambda c: c.data.startswith("check_taxes"))
 async def handle_check_taxes(callback: CallbackQuery):
+    """Обработка кнопки 'Проверить пошлины' с постраничной навигацией"""
     conn = None
+
+    # Извлекаем номер страницы из callback_data
+    data_parts = callback.data.split(":")
+    current_page = int(data_parts[1]) if len(data_parts) > 1 else 1
+
     try:
         params = _db_params()
         if any(v in (None, "") for v in params.values()):
@@ -412,50 +420,88 @@ async def handle_check_taxes(callback: CallbackQuery):
         conn = pymysql.connect(**params, cursorclass=pymysql.cursors.DictCursor)
         with conn.cursor() as cur:
             cur.execute("""
-                SELECT
-                    IF(t.oto_id is NULL, CONCAT(wurl.name, ' (0) '), CONCAT(wurl.name, ' (', t.oto_id,') ', ' ', o.address)) as 'Регион',
-                    COUNT(t.upno) as 'Кол-во пошлин'
-                FROM tax t
-                INNER JOIN webto_user_region_list wurl on wurl.id = t.region_id 
-                LEFT JOIN oto o on t.oto_id = o.id
-                where t.active = 1
-                GROUP BY t.region_id, t.oto_id
-                ORDER BY COUNT(t.upno) DESC
-            """)
+                        SELECT dpr.id as 'Id', dpr.region_code as 'Код региона', dpr.recipient_name as 'Получатель', IF(COUNT(t.upno) = 0, 0, COUNT(t.upno)) as 'Остаток'
+                        FROM duty_payment_requisites dpr
+                                 LEFT JOIN webto_user_region_list wurl ON wurl.code = dpr.region_code
+                                 LEFT JOIN tax t ON t.region_id = wurl.id AND t.active = 1
+                        GROUP BY dpr.id, dpr.region_code, dpr.recipient_name
+                        ORDER BY COUNT(t.upno) DESC, dpr.region_code
+                        """)
             rows = cur.fetchall()
 
+        # Разбиваем на страницы
         pages = _format_taxes_table(rows)
+        total_pages = len(pages)
 
-        if len(pages) == 1:
+        if total_pages == 0:
             await bot.edit_message_text(
                 chat_id=callback.message.chat.id,
                 message_id=callback.message.message_id,
-                text=pages[0],
-                reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                    [InlineKeyboardButton(text="Обновить", callback_data="check_taxes")]
-                ]),
+                text="Данных не найдено.",
                 parse_mode="HTML"
             )
-        else:
-            await bot.edit_message_text(
-                chat_id=callback.message.chat.id,
-                message_id=callback.message.message_id,
-                text=pages[0],
-                reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                    [InlineKeyboardButton(text="Обновить", callback_data="check_taxes")]
-                ]),
-                parse_mode="HTML"
+            await callback.answer()
+            return
+
+        # Ограничиваем номер страницы в допустимых пределах
+        current_page = max(1, min(current_page, total_pages))
+
+        # Создаем клавиатуру с навигацией
+        keyboard_buttons = []
+
+        # Кнопки навигации (предыдущая/следующая)
+        nav_buttons = []
+        if current_page > 1:
+            nav_buttons.append(InlineKeyboardButton(
+                text="⬅️ Назад",
+                callback_data=f"check_taxes:{current_page - 1}"
+            ))
+
+        nav_buttons.append(InlineKeyboardButton(
+            text=f"{current_page}/{total_pages}",
+            callback_data="ignore"
+        ))
+
+        if current_page < total_pages:
+            nav_buttons.append(InlineKeyboardButton(
+                text="Вперёд ➡️",
+                callback_data=f"check_taxes:{current_page + 1}"
+            ))
+
+        if nav_buttons:
+            keyboard_buttons.append(nav_buttons)
+
+        # Кнопка обновления
+        keyboard_buttons.append([
+            InlineKeyboardButton(
+                text="🔄 Обновить",
+                callback_data="check_taxes:1"
             )
-            for p in pages[1:]:
-                await bot.send_message(chat_id=callback.message.chat.id, text=p, parse_mode="HTML")
+        ])
+
+        keyboard = InlineKeyboardMarkup(inline_keyboard=keyboard_buttons)
+
+        # Отправляем/редактируем сообщение
+        await bot.edit_message_text(
+            chat_id=callback.message.chat.id,
+            message_id=callback.message.message_id,
+            text=pages[current_page - 1],
+            reply_markup=keyboard,
+            parse_mode="HTML"
+        )
 
         await callback.answer()
+
     except TelegramBadRequest as e:
-        logging.warning(f"TelegramBadRequest: {e}")
-        try:
-            await callback.answer("Сообщение устарело. Нажмите ещё раз «Проверить пошлины».", show_alert=True)
-        except Exception:
-            pass
+        if "message is not modified" in str(e):
+            # Сообщение не изменилось, просто подтверждаем нажатие
+            await callback.answer()
+        else:
+            logging.warning(f"TelegramBadRequest: {e}")
+            try:
+                await callback.answer("Сообщение устарело. Нажмите ещё раз «Проверить пошлины».", show_alert=True)
+            except Exception:
+                pass
     except Exception as e:
         logging.error(f"Ошибка в handle_check_taxes: {e}")
         logging.error(traceback.format_exc())
@@ -465,6 +511,13 @@ async def handle_check_taxes(callback: CallbackQuery):
         with contextlib.suppress(Exception):
             if conn:
                 conn.close()
+
+
+# Добавляем обработчик для игнорирования кнопки "ignore"
+@dp.callback_query(lambda c: c.data == "ignore")
+async def handle_ignore(callback: CallbackQuery):
+    """Обработка кнопки, которая ничего не делает (например, номер страницы)"""
+    await callback.answer()
 
 
 @dp.error()
