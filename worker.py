@@ -6,7 +6,8 @@ import traceback
 import contextlib
 import sys
 import html
-from datetime import datetime
+from datetime import datetime, time, timedelta
+import pytz  # Добавляем pytz для работы с часовыми поясами
 
 from telethon import TelegramClient, events
 from aiogram import Bot, Dispatcher
@@ -21,12 +22,18 @@ import pymysql
 from pymysql import Error as PyMysqlError
 
 from telethon.sessions import StringSession
+
 load_dotenv()
 
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     level=logging.INFO
 )
+
+# Добавляем глобальные переменные для кэша данных по кассам
+cached_cashboxes_data = []  # Будет хранить данные, полученные в 00:00
+cached_cashboxes_timestamp = None  # Время последнего обновления кэша
+cashboxes_cache_lock = asyncio.Lock()  # Блокировка для безопасного доступа к кэшу
 
 api_id = int(os.getenv("TG_API_ID"))
 api_hash = os.getenv("TG_API_HASH")
@@ -42,8 +49,10 @@ dp = Dispatcher()
 target_chat_id = int(os.getenv("OWNER_CHAT_ID"))
 _owner_d = os.getenv("OWNER_CHAT_ID_D")
 _owner_n = os.getenv("OWNER_CHAT_ID_N")
+_owner_f = os.getenv("OWNER_CHAT_ID_FINDIR")
 target_chat_id_D = int(_owner_d) if (_owner_d and _owner_d.isdigit()) else target_chat_id
 target_chat_id_N = int(_owner_n) if (_owner_n and _owner_n.isdigit()) else target_chat_id
+target_chat_id_F = int(_owner_f) if (_owner_f and _owner_f.isdigit()) else target_chat_id
 
 session_str = os.getenv("TG_SESSION")
 if not session_str:
@@ -55,7 +64,6 @@ parsed_data = []
 
 # Текст последнего сводного сообщения для "Назад"
 last_summary_text = ""
-
 
 
 # ---------- Работа с БД ----------
@@ -88,7 +96,7 @@ async def obrabotchik():
             cur.execute(
                 """
                 SELECT SUM(afoc.balance) AS total_balance
-                FROM algon_finance_online_cashbox afoc 
+                FROM algon_finance_online_cashbox afoc
                 WHERE afoc.type <> "disabled"
                 """
             )
@@ -107,6 +115,121 @@ async def obrabotchik():
         with contextlib.suppress(Exception):
             if conn:
                 conn.close()
+
+
+async def fetch_cashboxes_data():
+    """Получает данные по кассам из БД для кэширования"""
+    logging.info("Получение данных по кассам для кэша")
+    params = _db_params()
+    conn = None
+    try:
+        if any(v in (None, "") for v in params.values()):
+            logging.error("Параметры подключения к БД неполные")
+            return []
+
+        conn = pymysql.connect(**params, cursorclass=pymysql.cursors.DictCursor)
+
+        with conn.cursor() as cur:
+            # Запрос 1: кассы по организациям
+            cur.execute(
+                """
+                SELECT o.name, SUM(afoc.balance) as Kassa
+                FROM algon_finance_online_cashbox afoc
+                         INNER JOIN oto o ON o.id = afoc.oto_id
+                WHERE afoc.`type` <> "disabled"
+                  AND afoc.balance <> 0
+                  AND afoc.oto_id IS NOT NULL
+                GROUP BY o.name
+                ORDER BY Kassa DESC
+                """
+            )
+            rows_1 = cur.fetchall()
+
+            # Запрос 2: кассы по рег. организациям
+            cur.execute(
+                """
+                SELECT afoc.name, afoc.balance as Kassa
+                FROM algon_finance_online_cashbox afoc
+                WHERE (afoc.`type` = "reg" OR afoc.`type` = "manage_company")
+                  AND afoc.balance <> 0
+                ORDER BY Kassa DESC
+                """
+            )
+            rows_2 = cur.fetchall()
+
+        result = []
+        for row in rows_1 + rows_2:
+            name = (row.get("name") or "").strip()
+            balance = float(row.get("Kassa") or 0.0)
+            if balance != 0:
+                result.append({
+                    "name": name,
+                    "balance": balance,
+                    "type": "org" if row in rows_1 else "reg"
+                })
+
+        logging.info(f"Получено {len(result)} записей для кэша касс")
+        return result
+    except Exception as e:
+        logging.error(f"Ошибка при получении данных по кассам: {e}")
+        logging.error(traceback.format_exc())
+        return []
+    finally:
+        with contextlib.suppress(Exception):
+            if conn:
+                conn.close()
+
+
+async def update_cashboxes_cache():
+    """Обновляет кэш данных по кассам"""
+    global cached_cashboxes_data, cached_cashboxes_timestamp
+
+    async with cashboxes_cache_lock:
+        data = await fetch_cashboxes_data()
+        cached_cashboxes_data = data
+        cached_cashboxes_timestamp = datetime.now(pytz.timezone('Europe/Moscow'))
+        logging.info(f"Кэш касс обновлен в {cached_cashboxes_timestamp.strftime('%H:%M:%S')}")
+
+
+async def get_cashboxes_from_cache():
+    """Возвращает данные по кассам из кэша с временем обновления"""
+    async with cashboxes_cache_lock:
+        return cached_cashboxes_data.copy(), cached_cashboxes_timestamp
+
+
+async def scheduled_cache_update():
+    """Фоновая задача для обновления кэша каждый день в 00:00 по Москве"""
+    moscow_tz = pytz.timezone('Europe/Moscow')
+
+    while True:
+        try:
+            now_moscow = datetime.now(moscow_tz)
+            target_time = time(0, 0, 0)  # 00:00:00
+
+            # Вычисляем время до следующего 00:00
+            target_datetime = datetime.combine(now_moscow.date(), target_time)
+            target_datetime = moscow_tz.localize(target_datetime)
+
+            # Если уже прошло 00:00 сегодня, планируем на завтра
+            if now_moscow >= target_datetime:
+                target_datetime += timedelta(days=1)
+
+            wait_seconds = (target_datetime - now_moscow).total_seconds()
+
+            logging.info(f"Следующее обновление кэша касс в {target_datetime.strftime('%H:%M:%S %d.%m.%Y')}")
+            await asyncio.sleep(wait_seconds)
+
+            # Выполняем обновление
+            await update_cashboxes_cache()
+
+            # Ждем 1 секунду перед началом следующего цикла
+            await asyncio.sleep(1)
+
+        except Exception as e:
+            logging.error(f"Ошибка в scheduled_cache_update: {e}")
+            logging.error(traceback.format_exc())
+            # В случае ошибки ждем 5 минут перед повторной попыткой
+            await asyncio.sleep(300)
 
 
 # ---------- Парсинг входящих сообщений ----------
@@ -146,7 +269,24 @@ async def handler(event):
         total_str = f"{total:,.2f}".replace(",", " ").replace(".", ",")
 
         now = datetime.now().strftime("%d.%m.%Y")
-        kassa = await obrabotchik()
+
+        # Вместо obrabotchik() используем данные из кэша касс
+        cached_data, cache_time = await get_cashboxes_from_cache()
+
+        # Вычисляем общую сумму из кэшированных данных
+        kassa = 0.0
+        for item in cached_data:
+            kassa += item["balance"]
+
+        # Если кэш пустой (например, при первом запуске), используем старую функцию
+        if kassa == 0.0:
+            kassa = await obrabotchik()
+            cache_time_str = "(данные из БД в реальном времени)"
+        else:
+            # Форматируем время кэширования
+            time_str = cache_time.strftime("%H:%M %d.%m.%Y") if cache_time else "время неизвестно"
+            cache_time_str = f"(данные на {time_str})"
+
         kassa_str = f"{kassa:,.2f}".replace(",", " ").replace(".", ",")
         itog_sum = total + kassa
         itog_str = f"{itog_sum:,.2f}".replace(",", " ").replace(".", ",")
@@ -154,13 +294,14 @@ async def handler(event):
         last_summary_text = (
             f"<b>\U0001F4C5 Баланс Экосмотр на {now}</b>\n\n"
             f"\U0001F4B3 <b>1. Р/с:</b> {total_str} ₽\n"
-            f"\U0001F3E6 <b>2. Кассы Драйв:</b> {kassa_str} ₽\n\n"
+            f"\U0001F3E6 <b>2. Кассы Драйв:</b> {kassa_str} ₽ {cache_time_str}\n\n"
             f"\U0001F9FE <b>Итого:</b> {itog_str} ₽"
         )
 
+        # Добавляем кнопку для показа данных из кэша
         keyboard = InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="\U0001F4CB Подробно кассы", callback_data="show_details")],
-            [InlineKeyboardButton(text="\U0001F4E8 Подробно счета", callback_data="show_raw")]
+            [InlineKeyboardButton(text="\U0001F4E8 Подробно счета", callback_data="show_raw")],
+            [InlineKeyboardButton(text="\U0001F4C8 Подробно кассы", callback_data="show_cached_cashboxes")]
         ])
 
         logging.debug("Отправка сообщения в Telegram (основной и дополнительный чат)")
@@ -170,6 +311,9 @@ async def handler(event):
 
         if target_chat_id_N != target_chat_id:
             await bot.send_message(chat_id=target_chat_id_N, text=last_summary_text, reply_markup=keyboard)
+
+        if target_chat_id_F != target_chat_id:
+            await bot.send_message(chat_id=target_chat_id_F, text=last_summary_text, reply_markup=keyboard)
     except Exception as e:
         logging.error(f"Ошибка в handler: {e}")
         logging.error(traceback.format_exc())
@@ -185,7 +329,8 @@ async def handle_callback(callback: CallbackQuery):
     try:
         params = _db_params()
         if any(v in (None, "") for v in params.values()):
-            await callback.answer("База недоступна после перезапуска. Отправьте новое сообщение для обновления.", show_alert=True)
+            await callback.answer("База недоступна после перезапуска. Отправьте новое сообщение для обновления.",
+                                  show_alert=True)
             return
 
         conn = pymysql.connect(**params, cursorclass=pymysql.cursors.DictCursor)
@@ -193,9 +338,11 @@ async def handle_callback(callback: CallbackQuery):
             cur.execute(
                 """
                 SELECT o.name, SUM(afoc.balance) as Kassa
-                FROM algon_finance_online_cashbox afoc 
-                INNER JOIN oto o ON o.id = afoc.oto_id 
-                WHERE afoc.`type` <> "disabled" AND afoc.balance <> 0 AND afoc.oto_id IS NOT NULL
+                FROM algon_finance_online_cashbox afoc
+                         INNER JOIN oto o ON o.id = afoc.oto_id
+                WHERE afoc.`type` <> "disabled"
+                  AND afoc.balance <> 0
+                  AND afoc.oto_id IS NOT NULL
                 GROUP BY o.name
                 ORDER BY Kassa DESC
                 """
@@ -206,7 +353,8 @@ async def handle_callback(callback: CallbackQuery):
                 """
                 SELECT afoc.name, afoc.balance as Kassa
                 FROM algon_finance_online_cashbox afoc
-                WHERE (afoc.`type` = "reg" OR afoc.`type` = "manage_company") AND afoc.balance <> 0 
+                WHERE (afoc.`type` = "reg" OR afoc.`type` = "manage_company")
+                  AND afoc.balance <> 0
                 ORDER BY Kassa DESC
                 """
             )
@@ -225,9 +373,12 @@ async def handle_callback(callback: CallbackQuery):
             lines.append(f"{bullet} {name}\n{balance_str} ₽\n")
 
         message = "\n".join(lines) or "Нет данных"
-        keyboard = InlineKeyboardMarkup(
-            inline_keyboard=[[InlineKeyboardButton(text="🔙 Назад", callback_data="back_to_main")]]
-        )
+
+        keyboard_buttons = [
+            [InlineKeyboardButton(text="🔙 Назад", callback_data="back_to_main")],
+            [InlineKeyboardButton(text="\U0001F4C8 Подробно кассы", callback_data="show_cached_cashboxes")]
+        ]
+        keyboard = InlineKeyboardMarkup(inline_keyboard=keyboard_buttons)
 
         await bot.edit_message_text(
             chat_id=callback.message.chat.id,
@@ -251,6 +402,83 @@ async def handle_callback(callback: CallbackQuery):
                 conn.close()
 
 
+@dp.callback_query(lambda c: c.data == "show_cached_cashboxes")
+async def handle_show_cached_cashboxes(callback: CallbackQuery):
+    """Кнопка: показать данные по кассам из кэша (обновленного в 00:00)"""
+    logging.debug("Обработка callback: show_cached_cashboxes")
+
+    try:
+        # Получаем данные из кэша
+        cached_data, cache_time = await get_cashboxes_from_cache()
+
+        if not cached_data:
+            keyboard = InlineKeyboardMarkup(
+                inline_keyboard=[[InlineKeyboardButton(text="🔙 Назад", callback_data="back_to_main")]]
+            )
+
+            await bot.edit_message_text(
+                chat_id=callback.message.chat.id,
+                message_id=callback.message.message_id,
+                text="Данные по кассам на 00:00 еще не собраны или отсутствуют",
+                reply_markup=keyboard,
+                parse_mode="HTML"
+            )
+            await callback.answer()
+            return
+
+        # Формируем сообщение с данными из кэша
+        lines = []
+        total = 0.0
+
+        for item in cached_data:
+            name = item["name"]
+            balance = item["balance"]
+            balance_str = f"{balance:,.2f}".replace(",", " ").replace(".", ",")
+            bullet = "▪️" if item["type"] == "org" else "▫️"
+            lines.append(f"{bullet} {name}\n{balance_str} ₽\n")
+            total += balance
+
+        # Добавляем итоговую сумму
+        total_str = f"{total:,.2f}".replace(",", " ").replace(".", ",")
+
+        # Формируем время обновления
+        time_str = "время неизвестно"
+        if cache_time:
+            time_str = cache_time.strftime("%H:%M %d.%m.%Y")
+
+        message = (
+                f"<b>Данные по кассам (обновлено {time_str})</b>\n\n"
+                + "\n".join(lines)
+                + f"\n<b>Итого:</b> {total_str} ₽"
+        )
+
+        keyboard_buttons = [
+            [InlineKeyboardButton(text="🔄 Актуальные кассы", callback_data="show_details")],
+            [InlineKeyboardButton(text="🔙 Назад", callback_data="back_to_main")]
+        ]
+        keyboard = InlineKeyboardMarkup(inline_keyboard=keyboard_buttons)
+
+        await bot.edit_message_text(
+            chat_id=callback.message.chat.id,
+            message_id=callback.message.message_id,
+            text=message,
+            reply_markup=keyboard,
+            parse_mode="HTML"
+        )
+        await callback.answer()
+    except TelegramBadRequest as e:
+        logging.warning(f"TelegramBadRequest: {e}")
+        try:
+            await callback.answer("Сообщение устарело. Отправьте новое сообщение.", show_alert=True)
+        except Exception:
+            pass
+    except Exception as e:
+        logging.error(f"Ошибка в handle_show_cached_cashboxes: {e}")
+        logging.error(traceback.format_exc())
+        with contextlib.suppress(Exception):
+            await callback.answer(f"Ошибка: {e}", show_alert=True)
+
+
 @dp.callback_query(lambda c: c.data == "show_raw")
 async def handle_show_raw(callback: CallbackQuery):
     """Кнопка: показать сырые счета из последнего распарсенного сообщения (кеш).
@@ -259,9 +487,11 @@ async def handle_show_raw(callback: CallbackQuery):
     logging.debug("Обработка callback: show_raw")
     global parsed_data
     try:
-        keyboard = InlineKeyboardMarkup(
-            inline_keyboard=[[InlineKeyboardButton(text="🔙 Назад", callback_data="back_to_main")]]
-        )
+        keyboard_buttons = [
+            [InlineKeyboardButton(text="🔙 Назад", callback_data="back_to_main")],
+            [InlineKeyboardButton(text="\U0001F4C8 Кассы на 00:00", callback_data="show_cached_cashboxes")]
+        ]
+        keyboard = InlineKeyboardMarkup(inline_keyboard=keyboard_buttons)
 
         if not parsed_data:
             await bot.edit_message_text(
@@ -309,8 +539,8 @@ async def handle_back(callback: CallbackQuery):
     try:
         keyboard = InlineKeyboardMarkup(
             inline_keyboard=[
-                [InlineKeyboardButton(text="\U0001F4CB Подробно кассы", callback_data="show_details")],
-                [InlineKeyboardButton(text="\U0001F4E8 Подробно счета", callback_data="show_raw")]
+                [InlineKeyboardButton(text="\U0001F4E8 Подробно счета", callback_data="show_raw")],
+                [InlineKeyboardButton(text="\U0001F4C8 Подробно кассы", callback_data="show_cached_cashboxes")]
             ]
         )
 
@@ -332,6 +562,7 @@ async def handle_back(callback: CallbackQuery):
         logging.error(traceback.format_exc())
         with contextlib.suppress(Exception):
             await callback.answer(f"Ошибка: {e}", show_alert=True)
+
 
 def _format_taxes_table(rows):
     """
@@ -379,6 +610,7 @@ def _format_taxes_table(rows):
     current.append("</pre>")
     pages.append("\n".join(current))
     return pages
+
 
 @dp.message(Command("start"))
 async def cmd_start(message):
@@ -527,6 +759,14 @@ async def on_error(update, error):
 
 async def main():
     logging.debug("Запуск main()")
+
+    # Запускаем фоновую задачу для обновления кэша
+    cache_task = asyncio.create_task(scheduled_cache_update())
+
+    # Выполняем первоначальное обновление кэша
+    logging.info("Выполняем первоначальное обновление кэша касс...")
+    await update_cashboxes_cache()
+
     while True:
         try:
             await client.start()
