@@ -285,7 +285,7 @@ async def handler(event):
         else:
             # Форматируем время кэширования
             time_str = cache_time.strftime("%H:%M %d.%m.%Y") if cache_time else "время неизвестно"
-            cache_time_str = f"(данные на {time_str})"
+            cache_time_str = f""
 
         kassa_str = f"{kassa:,.2f}".replace(",", " ").replace(".", ",")
         itog_sum = total + kassa
@@ -489,7 +489,7 @@ async def handle_show_raw(callback: CallbackQuery):
     try:
         keyboard_buttons = [
             [InlineKeyboardButton(text="🔙 Назад", callback_data="back_to_main")],
-            [InlineKeyboardButton(text="\U0001F4C8 Кассы на 00:00", callback_data="show_cached_cashboxes")]
+            [InlineKeyboardButton(text="\U0001F4C8 Кассы", callback_data="show_cached_cashboxes")]
         ]
         keyboard = InlineKeyboardMarkup(inline_keyboard=keyboard_buttons)
 
