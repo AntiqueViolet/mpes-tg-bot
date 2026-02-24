@@ -50,9 +50,11 @@ target_chat_id = int(os.getenv("OWNER_CHAT_ID"))
 _owner_d = os.getenv("OWNER_CHAT_ID_D")
 _owner_n = os.getenv("OWNER_CHAT_ID_N")
 _owner_f = os.getenv("OWNER_CHAT_ID_FINDIR")
+_owner_ff = os.getenv("OWNER_CHAT_ID_FINANCE")
 target_chat_id_D = int(_owner_d) if (_owner_d and _owner_d.isdigit()) else target_chat_id
 target_chat_id_N = int(_owner_n) if (_owner_n and _owner_n.isdigit()) else target_chat_id
 target_chat_id_F = int(_owner_f) if (_owner_f and _owner_f.isdigit()) else target_chat_id
+target_chat_id_FF = int(_owner_ff) if (_owner_ff and _owner_ff.isdigit()) else target_chat_id
 
 session_str = os.getenv("TG_SESSION")
 if not session_str:
@@ -314,6 +316,9 @@ async def handler(event):
 
         if target_chat_id_F != target_chat_id:
             await bot.send_message(chat_id=target_chat_id_F, text=last_summary_text, reply_markup=keyboard)
+            
+        if target_chat_id_FF != target_chat_id:
+            await bot.send_message(chat_id=target_chat_id_FF, text=last_summary_text, reply_markup=keyboard)
     except Exception as e:
         logging.error(f"Ошибка в handler: {e}")
         logging.error(traceback.format_exc())
