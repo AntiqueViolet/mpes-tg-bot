@@ -256,6 +256,64 @@ def parse_financial_message(text):
     return total
 
 
+# ---------- Функции для пагинации ----------
+def paginate_items(items, items_per_page=15):
+    """Разбивает список элементов на страницы"""
+    pages = []
+    for i in range(0, len(items), items_per_page):
+        pages.append(items[i:i + items_per_page])
+    return pages
+
+
+def format_cashboxes_page(items, page_num, total_pages, cache_time):
+    """Форматирует страницу с данными по кассам"""
+    lines = []
+    total = 0.0
+
+    for item in items:
+        name = item["name"]
+        balance = item["balance"]
+        balance_str = f"{balance:,.2f}".replace(",", " ").replace(".", ",")
+        bullet = "▪️" if item["type"] == "org" else "▫️"
+        lines.append(f"{bullet} {name}\n{balance_str} ₽\n")
+        total += balance
+
+    # Формируем время обновления
+    time_str = "время неизвестно"
+    if cache_time:
+        time_str = cache_time.strftime("%H:%M %d.%m.%Y")
+
+    # Заголовок с номером страницы
+    header = f"<b>Данные по кассам (обновлено {time_str})</b>"
+    if total_pages > 1:
+        header += f"\n<i>Страница {page_num}/{total_pages}</i>"
+
+    # Итоговая сумма для страницы
+    page_total_str = f"{total:,.2f}".replace(",", " ").replace(".", ",")
+
+    return (
+            header + "\n\n" +
+            "\n".join(lines) +
+            f"\n<b>Итого на странице:</b> {page_total_str} ₽"
+    )
+
+
+def format_invoices_page(items, page_num, total_pages):
+    """Форматирует страницу с данными по счетам"""
+    lines = []
+
+    for name, value in items:
+        value_str = f"{value:,.2f}".replace(",", " ").replace(".", ",")
+        lines.append(f"▫️ {html.escape(name)}\n{value_str} ₽\n")
+
+    # Заголовок с номером страницы
+    header = "<b>Детализация по счетам</b>"
+    if total_pages > 1:
+        header += f"\n<i>Страница {page_num}/{total_pages}</i>"
+
+    return header + "\n\n" + "\n".join(lines)
+
+
 # ---------- Обработчики ----------
 @client.on(events.NewMessage)
 async def handler(event):
@@ -302,8 +360,8 @@ async def handler(event):
 
         # Добавляем кнопку для показа данных из кэша
         keyboard = InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="\U0001F4E8 Подробно счета", callback_data="show_raw")],
-            [InlineKeyboardButton(text="\U0001F4C8 Подробно кассы", callback_data="show_cached_cashboxes")]
+            [InlineKeyboardButton(text="\U0001F4E8 Подробно счета", callback_data="show_raw:1")],
+            [InlineKeyboardButton(text="\U0001F4C8 Подробно кассы", callback_data="show_cached_cashboxes:1")]
         ])
 
         logging.debug("Отправка сообщения в Telegram (основной и дополнительный чат)")
@@ -316,7 +374,7 @@ async def handler(event):
 
         if target_chat_id_F != target_chat_id:
             await bot.send_message(chat_id=target_chat_id_F, text=last_summary_text, reply_markup=keyboard)
-            
+
         if target_chat_id_FF != target_chat_id:
             await bot.send_message(chat_id=target_chat_id_FF, text=last_summary_text, reply_markup=keyboard)
     except Exception as e:
@@ -381,7 +439,7 @@ async def handle_callback(callback: CallbackQuery):
 
         keyboard_buttons = [
             [InlineKeyboardButton(text="🔙 Назад", callback_data="back_to_main")],
-            [InlineKeyboardButton(text="\U0001F4C8 Подробно кассы", callback_data="show_cached_cashboxes")]
+            [InlineKeyboardButton(text="\U0001F4C8 Подробно кассы", callback_data="show_cached_cashboxes:1")]
         ]
         keyboard = InlineKeyboardMarkup(inline_keyboard=keyboard_buttons)
 
@@ -407,10 +465,14 @@ async def handle_callback(callback: CallbackQuery):
                 conn.close()
 
 
-@dp.callback_query(lambda c: c.data == "show_cached_cashboxes")
+@dp.callback_query(lambda c: c.data.startswith("show_cached_cashboxes"))
 async def handle_show_cached_cashboxes(callback: CallbackQuery):
-    """Кнопка: показать данные по кассам из кэша (обновленного в 00:00)"""
+    """Кнопка: показать данные по кассам из кэша с пагинацией"""
     logging.debug("Обработка callback: show_cached_cashboxes")
+
+    # Извлекаем номер страницы из callback_data
+    data_parts = callback.data.split(":")
+    current_page = int(data_parts[1]) if len(data_parts) > 1 else 1
 
     try:
         # Получаем данные из кэша
@@ -431,36 +493,49 @@ async def handle_show_cached_cashboxes(callback: CallbackQuery):
             await callback.answer()
             return
 
-        # Формируем сообщение с данными из кэша
-        lines = []
-        total = 0.0
+        # Разбиваем на страницы
+        pages = paginate_items(cached_data, items_per_page=15)
+        total_pages = len(pages)
 
-        for item in cached_data:
-            name = item["name"]
-            balance = item["balance"]
-            balance_str = f"{balance:,.2f}".replace(",", " ").replace(".", ",")
-            bullet = "▪️" if item["type"] == "org" else "▫️"
-            lines.append(f"{bullet} {name}\n{balance_str} ₽\n")
-            total += balance
+        # Ограничиваем номер страницы
+        current_page = max(1, min(current_page, total_pages))
+        page_items = pages[current_page - 1]
 
-        # Добавляем итоговую сумму
-        total_str = f"{total:,.2f}".replace(",", " ").replace(".", ",")
+        # Форматируем сообщение
+        message = format_cashboxes_page(page_items, current_page, total_pages, cache_time)
 
-        # Формируем время обновления
-        time_str = "время неизвестно"
-        if cache_time:
-            time_str = cache_time.strftime("%H:%M %d.%m.%Y")
+        # Создаем клавиатуру с навигацией
+        keyboard_buttons = []
 
-        message = (
-                f"<b>Данные по кассам (обновлено {time_str})</b>\n\n"
-                + "\n".join(lines)
-                + f"\n<b>Итого:</b> {total_str} ₽"
-        )
+        # Кнопки навигации
+        nav_buttons = []
+        if current_page > 1:
+            nav_buttons.append(InlineKeyboardButton(
+                text="⬅️",
+                callback_data=f"show_cached_cashboxes:{current_page - 1}"
+            ))
 
-        keyboard_buttons = [
+        nav_buttons.append(InlineKeyboardButton(
+            text=f"{current_page}/{total_pages}",
+            callback_data="ignore"
+        ))
+
+        if current_page < total_pages:
+            nav_buttons.append(InlineKeyboardButton(
+                text="➡️",
+                callback_data=f"show_cached_cashboxes:{current_page + 1}"
+            ))
+
+        if nav_buttons:
+            keyboard_buttons.append(nav_buttons)
+
+        # Дополнительные кнопки
+        extra_buttons = [
             [InlineKeyboardButton(text="🔄 Актуальные кассы", callback_data="show_details")],
             [InlineKeyboardButton(text="🔙 Назад", callback_data="back_to_main")]
         ]
+        keyboard_buttons.extend(extra_buttons)
+
         keyboard = InlineKeyboardMarkup(inline_keyboard=keyboard_buttons)
 
         await bot.edit_message_text(
@@ -484,21 +559,22 @@ async def handle_show_cached_cashboxes(callback: CallbackQuery):
             await callback.answer(f"Ошибка: {e}", show_alert=True)
 
 
-@dp.callback_query(lambda c: c.data == "show_raw")
+@dp.callback_query(lambda c: c.data.startswith("show_raw"))
 async def handle_show_raw(callback: CallbackQuery):
-    """Кнопка: показать сырые счета из последнего распарсенного сообщения (кеш).
-    Если кеша нет (после рестарта), показываем текст "Данные устарели" прямо в сообщении.
-    """
+    """Кнопка: показать сырые счета из последнего распарсенного сообщения с пагинацией"""
     logging.debug("Обработка callback: show_raw")
     global parsed_data
-    try:
-        keyboard_buttons = [
-            [InlineKeyboardButton(text="🔙 Назад", callback_data="back_to_main")],
-            [InlineKeyboardButton(text="\U0001F4C8 Кассы", callback_data="show_cached_cashboxes")]
-        ]
-        keyboard = InlineKeyboardMarkup(inline_keyboard=keyboard_buttons)
 
+    # Извлекаем номер страницы из callback_data
+    data_parts = callback.data.split(":")
+    current_page = int(data_parts[1]) if len(data_parts) > 1 else 1
+
+    try:
         if not parsed_data:
+            keyboard = InlineKeyboardMarkup(
+                inline_keyboard=[[InlineKeyboardButton(text="🔙 Назад", callback_data="back_to_main")]]
+            )
+
             await bot.edit_message_text(
                 chat_id=callback.message.chat.id,
                 message_id=callback.message.message_id,
@@ -509,12 +585,51 @@ async def handle_show_raw(callback: CallbackQuery):
             await callback.answer()
             return
 
-        lines = []
-        for name, value in parsed_data:
-            value_str = f"{value:,.2f}".replace(",", " ").replace(".", ",")
-            lines.append(f"▫️ {html.escape(name)}\n{value_str} ₽\n")
+        # Разбиваем на страницы
+        pages = paginate_items(parsed_data, items_per_page=15)
+        total_pages = len(pages)
 
-        message = "\n".join(lines) or "Данные устарели"
+        # Ограничиваем номер страницы
+        current_page = max(1, min(current_page, total_pages))
+        page_items = pages[current_page - 1]
+
+        # Форматируем сообщение
+        message = format_invoices_page(page_items, current_page, total_pages)
+
+        # Создаем клавиатуру с навигацией
+        keyboard_buttons = []
+
+        # Кнопки навигации
+        nav_buttons = []
+        if current_page > 1:
+            nav_buttons.append(InlineKeyboardButton(
+                text="⬅️",
+                callback_data=f"show_raw:{current_page - 1}"
+            ))
+
+        nav_buttons.append(InlineKeyboardButton(
+            text=f"{current_page}/{total_pages}",
+            callback_data="ignore"
+        ))
+
+        if current_page < total_pages:
+            nav_buttons.append(InlineKeyboardButton(
+                text="➡️",
+                callback_data=f"show_raw:{current_page + 1}"
+            ))
+
+        if nav_buttons:
+            keyboard_buttons.append(nav_buttons)
+
+        # Дополнительные кнопки
+        extra_buttons = [
+            [InlineKeyboardButton(text="\U0001F4C8 Кассы", callback_data="show_cached_cashboxes:1")],
+            [InlineKeyboardButton(text="🔙 Назад", callback_data="back_to_main")]
+        ]
+        keyboard_buttons.extend(extra_buttons)
+
+        keyboard = InlineKeyboardMarkup(inline_keyboard=keyboard_buttons)
+
         await bot.edit_message_text(
             chat_id=callback.message.chat.id,
             message_id=callback.message.message_id,
@@ -544,8 +659,8 @@ async def handle_back(callback: CallbackQuery):
     try:
         keyboard = InlineKeyboardMarkup(
             inline_keyboard=[
-                [InlineKeyboardButton(text="\U0001F4E8 Подробно счета", callback_data="show_raw")],
-                [InlineKeyboardButton(text="\U0001F4C8 Подробно кассы", callback_data="show_cached_cashboxes")]
+                [InlineKeyboardButton(text="\U0001F4E8 Подробно счета", callback_data="show_raw:1")],
+                [InlineKeyboardButton(text="\U0001F4C8 Подробно кассы", callback_data="show_cached_cashboxes:1")]
             ]
         )
 
